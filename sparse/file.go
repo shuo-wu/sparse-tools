@@ -17,8 +17,10 @@ type FileIoProcessor interface {
 	// File I/O methods for direct or bufferend I/O
 	ReadAt(data []byte, offset int64) (int, error)
 	WriteAt(data []byte, offset int64) (int, error)
+	UnmapAt(length uint32, offset int64) (int, error)
 	GetFile() *os.File
-	GetDataLayout (ctx context.Context) (<-chan FileInterval, <-chan error, error)
+	GetFieMap() FiemapFile
+	GetDataLayout(ctx context.Context) (<-chan FileInterval, <-chan error, error)
 	Close() error
 	Sync() error
 	Truncate(size int64) error
@@ -29,6 +31,7 @@ type FileIoProcessor interface {
 
 type BufferedFileIoProcessor struct {
 	*os.File
+	fieMap FiemapFile
 }
 
 func NewBufferedFileIoProcessor(name string, flag int, perm os.FileMode, isCreate ...bool) (*BufferedFileIoProcessor, error) {
@@ -42,18 +45,32 @@ func NewBufferedFileIoProcessor(name string, flag int, perm os.FileMode, isCreat
 		return nil, err
 	}
 
-	return &BufferedFileIoProcessor{file}, nil
+	return &BufferedFileIoProcessor{
+		File:   file,
+		fieMap: NewFiemapFile(file),
+	}, nil
 }
 
 func NewBufferedFileIoProcessorByFP(fp *os.File) *BufferedFileIoProcessor {
-	return &BufferedFileIoProcessor{fp}
+	return &BufferedFileIoProcessor{
+		File:   fp,
+		fieMap: NewFiemapFile(fp),
+	}
+}
+
+func (file *BufferedFileIoProcessor) UnmapAt(length uint32, offset int64) (int, error) {
+	return int(length), file.fieMap.PunchHole(offset, int64(length))
 }
 
 func (file *BufferedFileIoProcessor) GetFile() *os.File {
 	return file.File
 }
 
-func (file *BufferedFileIoProcessor) GetDataLayout (ctx context.Context) (<-chan FileInterval, <-chan error, error) {
+func (file *BufferedFileIoProcessor) GetFieMap() FiemapFile {
+	return file.fieMap
+}
+
+func (file *BufferedFileIoProcessor) GetDataLayout(ctx context.Context) (<-chan FileInterval, <-chan error, error) {
 	return GetFileLayout(ctx, file)
 }
 
@@ -72,6 +89,7 @@ func (file *BufferedFileIoProcessor) Close() error {
 
 type DirectFileIoProcessor struct {
 	*os.File
+	fieMap FiemapFile
 }
 
 const (
@@ -93,11 +111,17 @@ func NewDirectFileIoProcessor(name string, flag int, perm os.FileMode, isCreate 
 		return nil, err
 	}
 
-	return &DirectFileIoProcessor{file}, nil
+	return &DirectFileIoProcessor{
+		File:   file,
+		fieMap: NewFiemapFile(file),
+	}, nil
 }
 
 func NewDirectFileIoProcessorByFP(fp *os.File) *DirectFileIoProcessor {
-	return &DirectFileIoProcessor{fp}
+	return &DirectFileIoProcessor{
+		File:   fp,
+		fieMap: NewFiemapFile(fp),
+	}
 }
 
 // ReadAt read into unaligned data buffer via direct I/O
@@ -125,11 +149,20 @@ func (file *DirectFileIoProcessor) WriteAt(data []byte, offset int64) (int, erro
 	return n, err
 }
 
+// UnmapAt punches a hole
+func (file *DirectFileIoProcessor) UnmapAt(length uint32, offset int64) (int, error) {
+	return int(length), file.fieMap.PunchHole(offset, int64(length))
+}
+
 func (file *DirectFileIoProcessor) GetFile() *os.File {
 	return file.File
 }
 
-func (file *DirectFileIoProcessor) GetDataLayout (ctx context.Context) (<-chan FileInterval, <-chan error, error) {
+func (file *DirectFileIoProcessor) GetFieMap() FiemapFile {
+	return file.fieMap
+}
+
+func (file *DirectFileIoProcessor) GetDataLayout(ctx context.Context) (<-chan FileInterval, <-chan error, error) {
 	return GetFileLayout(ctx, file)
 }
 
@@ -323,8 +356,7 @@ func GetFiemapRegionExts(file FileIoProcessor, interval Interval, extCount int) 
 	}
 
 	retrievalStart := time.Now()
-	fiemap := NewFiemapFile(file.GetFile())
-	_, exts, errno := fiemap.FiemapRegion(uint32(extCount), uint64(interval.Begin), uint64(interval.End-interval.Begin))
+	_, exts, errno := file.GetFieMap().FiemapRegion(uint32(extCount), uint64(interval.Begin), uint64(interval.End-interval.Begin))
 	if errno != 0 {
 		log.Error("failed to call fiemap.Fiemap(extCount)")
 		return exts, fmt.Errorf(errno.Error())
