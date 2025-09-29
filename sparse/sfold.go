@@ -43,7 +43,7 @@ func FoldFile(childFileName, parentFileName string, ops FileHandlingOperations) 
 	}
 
 	// open child and parent files
-	childFileIo, err := NewDirectFileIoProcessor(childFileName, os.O_RDONLY, 0)
+	childFileIo, err := NewDirectFileIoProcessor(childFileName, os.O_RDWR, 0)
 	if err != nil {
 		return errors.Wrap(err, "failed to open childFile")
 	}
@@ -100,14 +100,19 @@ func coalesce(parentFileIo, childFileIo FileIoProcessor, fileSize int64, ops Fil
 				// read a batch from child
 				_, err := childFileIo.ReadAt(buffer[:size], offset)
 				if err != nil {
-					return errors.Wrapf(err, "failed to read childFile filename: %v, size: %v, at: %v",
+					return errors.Wrapf(err, "failed to read childFile filename during coalesce: %v, size: %v, at: %v",
 						childFileIo.Name(), size, offset)
 				}
 				// write a batch to parent
 				n, err = parentFileIo.WriteAt(buffer[:size], offset)
 				if err != nil {
-					return errors.Wrapf(err, "failed to write to parentFile filename: %v, size: %v, at: %v",
+					return errors.Wrapf(err, "failed to write to parentFile filename during coalesce: %v, size: %v, at: %v",
 						parentFileIo.Name(), size, offset)
+				}
+				_, err = childFileIo.UnmapAt(uint32(size), offset)
+				if err != nil {
+					log.WithError(err).Warnf("failed to unmap to childFile filename during coalesce, will ignore: %v, size: %v, at: %v",
+						childFileIo.Name(), size, offset)
 				}
 				offset += int64(n)
 			}
